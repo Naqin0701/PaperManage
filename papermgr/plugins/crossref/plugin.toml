@@ -1,0 +1,11 @@
+name = "crossref"
+version = "0.1.0"
+protocol = "papermgr-plugin/v1"
+capabilities = ["metadata"]
+entry = ["./bin/fetch-crossref"]
+priority = 100
+timeout_seconds = 20
+requires = ["python3"]
+
+[config]
+mailto = "user@example.com"

@@ -1,0 +1,44 @@
+ papermgr  /home/naqin/papermgr-demo/library                                                                                            4 results  ·  index fresh
+
+ TAGS                 10  │ ▏RESULTS                                                    4  │  DETAIL
+▌   All papers         4  │          unpublished notes                                     │  title    Attention Is All You Need
+    Pending review     0  │     1997 Long Short-Term Memory                                │  citekey  vaswani-2017-attention-all-you
+  ▾ ml                 3  │     2020 Retrieval-Augmented Generation for Knowledge-Intens…  │
+  │ ▾ llm              3  │ ▸   2017 Attention Is All You Need                             │  authors  Ashish Vaswani, Noam Shazeer, Niki Parmar,
+  │ │ • rag            1  │                                                                │           Jakob Uszkoreit, Llion Jones, Aidan N. Gomez,
+  │ │ • rnn            1  │                                                                │           Lukasz Kaiser, Illia Polosukhin
+  │ │ • transformer    1  │                                                                │  year     2017
+  ▾ status             4  │                                                                │  venue    arXiv
+  │ • read             2  │                                                                │  type     preprint
+  │ • reading          1  │                                                                │
+  │ • skim             1  │                                                                │  tags     #ml/llm/transformer #status/read
+  • test               1  │                                                                │  review   done
+  ── saved queries ──     │                                                                │  doi      10.48550/arXiv.1706.03762
+  ↳ recent                │                                                                │  arxiv    1706.03762
+                          │                                                                │  url      https://arxiv.org/abs/1706.03762
+                          │                                                                │
+                          │                                                                │  note     present
+                          │                                                                │  files    supplement/appendix.txt
+                          │                                                                │
+                          │                                                                │  ─────────────────────────────────────────────────────
+                          │                                                                │
+                          │                                                                │  abstract
+                          │                                                                │  The dominant sequence transduction models are based on
+                          │                                                                │  complex recurrent or convolutional neural networks in
+                          │                                                                │  an encoder-decoder configuration. The best performing
+                          │                                                                │  models also connect the encoder and decoder through an
+                          │                                                                │  attention mechanism. We propose a new simple network
+                          │                                                                │  architecture, the Transformer, based solely on
+                          │                                                                │  attention mechanisms, dispensing with recurrence and
+                          │                                                                │  convolutions entirely. Experiments on two machine
+                          │                                                                │  translation tasks show these models to be superior in
+                          │                                                                │  quality while being more parallelizable and requiring
+                          │                                                                │  significantly less time to train. Our model achieves
+                          │                                                                │  28.4 BLEU on the WMT 2014 English-to-German translation
+                          │                                                                │  task, improving over the existing best results,
+                          │                                                                │  including ensembles by over 2 BLEU. On the WMT 2014
+                          │                                                                │  English-to-French translation task, our model
+                          │                                                                │  establishes a new single-model state-of-the-art BLEU
+                          │                                                                │  score of 41.8 after training for 3.5 days on eight
+                          │                                                                │  GPUs, a small fraction of the training costs of the
+ 1 tags   2 results   3 detail   tab cycle                                                                                 / search   ? help   q quit

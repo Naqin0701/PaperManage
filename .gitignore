@@ -1,0 +1,15 @@
+# Build output
+papermgr/bin/
+papermgr/demo-lib/
+
+# Local demo libraries / state
+/tmp-demo/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,5 @@
+bin/
+demo-lib/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

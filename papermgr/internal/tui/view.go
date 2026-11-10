@@ -1,0 +1,905 @@
+package tui
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+
+	"papermgr/internal/model"
+)
+
+var (
+	// Tokyo Night foreground palette. No background is painted, so Ghostty
+	// transparency and blur show through every cell.
+	colFg     = lipgloss.AdaptiveColor{Light: "#3760bf", Dark: "#c0caf5"}
+	colSoft   = lipgloss.AdaptiveColor{Light: "#3a4a8a", Dark: "#a9b1d6"}
+	colAccent = lipgloss.AdaptiveColor{Light: "#2e7de9", Dark: "#7aa2f7"}
+	colDim    = lipgloss.AdaptiveColor{Light: "#6172b0", Dark: "#737aa2"}
+	colFaint  = lipgloss.AdaptiveColor{Light: "#a8aecb", Dark: "#3b4261"}
+	colGreen  = lipgloss.AdaptiveColor{Light: "#587539", Dark: "#9ece6a"}
+	colYellow = lipgloss.AdaptiveColor{Light: "#8c6c3e", Dark: "#e0af68"}
+	colRed    = lipgloss.AdaptiveColor{Light: "#f52a65", Dark: "#f7768e"}
+	colCyan   = lipgloss.AdaptiveColor{Light: "#007197", Dark: "#7dcfff"}
+
+	styleApp      = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	styleTitle    = lipgloss.NewStyle().Bold(true).Foreground(colFg)
+	styleRow      = lipgloss.NewStyle().Foreground(colSoft)
+	styleDim      = lipgloss.NewStyle().Foreground(colDim)
+	styleAccent   = lipgloss.NewStyle().Foreground(colAccent)
+	styleGreen    = lipgloss.NewStyle().Foreground(colGreen)
+	styleYellow   = lipgloss.NewStyle().Foreground(colYellow)
+	styleRed      = lipgloss.NewStyle().Foreground(colRed)
+	styleCyan     = lipgloss.NewStyle().Foreground(colCyan)
+	styleFaint    = lipgloss.NewStyle().Foreground(colFaint)
+	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(colFg)
+	styleBox      = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colFaint).Padding(1, 2)
+)
+
+type styledLine struct {
+	text  string
+	style lipgloss.Style
+}
+
+// View renders the whole screen as a flat, fixed three-pane layout.
+func (m *Model) View() string {
+	if m.width == 0 || m.height == 0 {
+		return ""
+	}
+	switch m.mode {
+	case modeHelp:
+		return m.renderHelp()
+	case modeLogs:
+		return m.renderLogs()
+	case modeTasks:
+		return m.renderTasks()
+	case modeReview:
+		return m.renderReview()
+	case modeConfirm:
+		return m.renderConfirm()
+	}
+
+	bodyH := m.height - 3
+	if bodyH < 3 {
+		bodyH = 3
+	}
+	leftW, midW, rightW := m.layoutWidths()
+	body := lipgloss.JoinHorizontal(lipgloss.Top,
+		m.renderTags(leftW, bodyH),
+		m.renderList(midW, bodyH),
+		m.renderDetail(rightW, bodyH),
+	)
+	return lipgloss.JoinVertical(lipgloss.Left,
+		m.renderHeader(),
+		"",
+		body,
+		m.renderFooter(),
+	)
+}
+
+func (m *Model) layoutWidths() (int, int, int) {
+	left := m.width / 5
+	if left < 18 {
+		left = 18
+	}
+	if left > 28 {
+		left = 28
+	}
+	right := m.width * 38 / 100
+	if right < 32 {
+		right = 32
+	}
+	if right > 70 {
+		right = 70
+	}
+	mid := m.width - left - right
+	if mid < 26 {
+		mid = 26
+		right = m.width - left - mid
+		if right < 20 {
+			right = 20
+			left = m.width - mid - right
+			if left < 16 {
+				left = 16
+			}
+		}
+	}
+	return left, mid, right
+}
+
+func (m *Model) renderHeader() string {
+	rightText := fmt.Sprintf("%d results", len(m.hits))
+	rightStyle := styleDim
+	if m.busy {
+		rightText += "  ·  " + m.busyMsg
+		rightStyle = styleYellow
+	} else if m.dirty > 0 {
+		rightText += fmt.Sprintf("  ·  %d unindexed", m.dirty)
+		rightStyle = styleYellow
+	} else {
+		rightText += "  ·  index fresh"
+	}
+	if m.width < 64 {
+		rightText = fmt.Sprintf("%d results", len(m.hits))
+		if m.dirty > 0 {
+			rightText += " !"
+			rightStyle = styleYellow
+		}
+	}
+	right := rightStyle.Render(rightText)
+	path := m.st.Root
+	// Reserve a stable amount for the right status so the path does not
+	// reflow when "index fresh" becomes "N unindexed".
+	budget := m.width - 48
+	if budget < 6 {
+		path = ""
+	} else {
+		path = elideMiddle(path, budget)
+	}
+	left := styleApp.Render("papermgr")
+	if path != "" {
+		left += styleDim.Render("  " + path)
+	}
+	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 0 {
+		pad = 0
+	}
+	return " " + left + strings.Repeat(" ", max(0, pad-1)) + right
+}
+
+func (m *Model) renderFooter() string {
+	right := styleDim.Render("/ search   ? help   q quit")
+	switch m.mode {
+	case modeSearch, modeCommand, modeTag:
+		prefix := "/"
+		if m.mode == modeCommand {
+			prefix = ":"
+		} else if m.mode == modeTag {
+			prefix = "tag>"
+		}
+		value := m.input.Value()
+		line := " " + prefix + " " + value + "▏"
+		if m.mode == modeTag {
+			line += styleDim.Render("  (comma/space separated, -tag removes)")
+		}
+		return joinLine(line, styleDim.Render("esc cancel"), m.width)
+	case modeNoteFormat:
+		return joinLine(" no note   [m] markdown   [t] tex   [p] typst", styleDim.Render("esc cancel"), m.width)
+	}
+
+	segments := []struct {
+		key  string
+		text string
+		f    focus
+	}{
+		{"1", "tags", focusTags},
+		{"2", "results", focusList},
+		{"3", "detail", focusDetail},
+	}
+	var left strings.Builder
+	left.WriteString(" ")
+	for i, seg := range segments {
+		if i > 0 {
+			left.WriteString("   ")
+		}
+		label := seg.key + " " + seg.text
+		if m.focus == seg.f {
+			left.WriteString(styleAccent.Render(label))
+		} else {
+			left.WriteString(styleDim.Render(label))
+		}
+	}
+	left.WriteString("   " + styleFaint.Render("tab") + styleDim.Render(" cycle"))
+
+	if m.errMsg != "" {
+		msg := truncateStr(m.errMsg, max(8, m.width/2))
+		left.WriteString("   " + styleRed.Render("· "+msg))
+	} else if m.message != "" {
+		msg := truncateStr(m.message, max(8, m.width/3))
+		left.WriteString("   " + styleDim.Render("· "+msg))
+	}
+	return joinLine(left.String(), right, m.width)
+}
+
+func joinLine(left, right string, width int) string {
+	lw, rw := lipgloss.Width(left), lipgloss.Width(right)
+	if lw+rw+1 > width {
+		// Keep the left side (mode/hotkeys) and trim the right hint first.
+		avail := width - lw - 1
+		if avail > 0 {
+			right = ansi.Truncate(right, avail, "")
+			rw = lipgloss.Width(right)
+			return left + strings.Repeat(" ", max(1, width-lw-rw-1)) + right
+		}
+		return renderFixed(ansi.Truncate(left, width, "…"), lipgloss.Style{}, width)
+	}
+	return left + strings.Repeat(" ", max(1, width-lw-rw-1)) + right
+}
+
+func (m *Model) paneHeader(title, suffix string, width int, focused bool) styledLine {
+	left := " " + title
+	if focused {
+		left = "▏" + title
+	}
+	line := left
+	if suffix != "" {
+		right := suffix + " "
+		pad := width - lipgloss.Width(left) - lipgloss.Width(right)
+		if pad < 1 {
+			pad = 1
+		}
+		line += strings.Repeat(" ", pad) + right
+	}
+	st := styleDim
+	if focused {
+		st = styleAccent
+	}
+	return styledLine{text: line, style: st}
+}
+
+func (m *Model) renderTags(width, height int) string {
+	contentW := max(1, width-3)
+	lines := []styledLine{m.paneHeader("TAGS", fmt.Sprintf("%d", len(m.tags)), contentW, m.focus == focusTags)}
+	visible := max(1, height-1)
+	top := 0
+	if m.tagCursor >= visible {
+		top = m.tagCursor - visible + 1
+	}
+	for i := top; i < len(m.tagItems) && i < top+visible; i++ {
+		it := m.tagItems[i]
+		if it.section {
+			text := "  " + styleFaint.Render("── ") + styleDim.Render(it.label) + styleFaint.Render(" ──")
+			lines = append(lines, styledLine{text: text})
+			continue
+		}
+		count := ""
+		if it.tag != "" || it.all || it.pending {
+			count = fmt.Sprintf("%d", it.count)
+		}
+		cursor := "  "
+		cursorStyled := cursor
+		if i == m.tagCursor {
+			cursor = "▌ "
+			cursorStyled = styleAccent.Render(cursor)
+		}
+		var prefixPlain, prefixStyled string
+		switch {
+		case it.tag != "":
+			tree := strings.Repeat("│ ", it.depth)
+			marker := "• "
+			markerStyled := styleDim.Render(marker)
+			if it.hasChildren {
+				if it.collapsed {
+					marker = "▸ "
+				} else {
+					marker = "▾ "
+				}
+				markerStyled = styleAccent.Render(marker)
+			}
+			prefixPlain = cursor + tree + marker
+			prefixStyled = cursorStyled + styleFaint.Render(tree) + markerStyled
+		case it.queryName != "":
+			prefixPlain = cursor + "↳ "
+			prefixStyled = cursorStyled + styleAccent.Render("↳ ")
+		default:
+			prefixPlain = cursor + "  "
+			prefixStyled = cursorStyled + "  "
+		}
+		labelW := contentW - lipgloss.Width(prefixPlain) - lipgloss.Width(count) - 1
+		if labelW < 2 {
+			labelW = 2
+		}
+		label := truncateStr(it.label, labelW)
+		pad := labelW - lipgloss.Width(label)
+		st := styleRow
+		switch {
+		case i == m.tagCursor:
+			st = styleSelected
+		case it.pending && m.pending:
+			st = styleAccent
+		case it.all && !m.pending && m.activeTag == "":
+			st = styleAccent
+		case it.tag != "" && it.tag == m.activeTag:
+			st = styleAccent
+		}
+		text := prefixStyled + st.Render(label) + strings.Repeat(" ", max(0, pad)) + styleDim.Render(count) + " "
+		lines = append(lines, styledLine{text: text})
+	}
+	return joinPanes(lines, contentW, height, " │ ")
+}
+
+func (m *Model) renderList(width, height int) string {
+	title := "RESULTS"
+	if m.pending {
+		title = "REVIEW"
+	}
+	contentW := max(1, width-3)
+	lines := []styledLine{m.paneHeader(title, fmt.Sprintf("%d", len(m.hits)), contentW, m.focus == focusList)}
+	visible := max(1, height-1)
+	if m.cursor < m.listTop {
+		m.listTop = m.cursor
+	}
+	if m.cursor >= m.listTop+visible {
+		m.listTop = m.cursor - visible + 1
+	}
+	if m.listTop < 0 {
+		m.listTop = 0
+	}
+	for i := m.listTop; i < len(m.hits) && i < m.listTop+visible; i++ {
+		h := m.hits[i]
+		cursor := "  "
+		cursorStyled := cursor
+		if i == m.cursor {
+			cursorStyled = styleAccent.Render("▸ ")
+		}
+		check := "  "
+		checkStyled := check
+		if m.marked[h.Citekey] {
+			checkStyled = styleGreen.Render("✓ ")
+		}
+		year := "    "
+		if h.Year != nil {
+			year = fmt.Sprintf("%4d", *h.Year)
+		}
+		budget := contentW - 10
+		if budget < 4 {
+			budget = 4
+		}
+		titleStyle := styleRow
+		if i == m.cursor {
+			titleStyle = styleSelected
+		}
+		text := cursorStyled + checkStyled + styleDim.Render(year) + " " + titleStyle.Render(truncateStr(h.Title, budget))
+		lines = append(lines, styledLine{text: text})
+	}
+	if len(m.hits) == 0 {
+		lines = append(lines, styledLine{text: "  no papers", style: styleDim})
+	}
+	return joinPanes(lines, contentW, height, " │ ")
+}
+
+func (m *Model) renderDetail(width, height int) string {
+	visible := max(1, height-1)
+	var body []styledLine
+	suffix := ""
+	labelW := 8
+	valueW := max(10, width-labelW-3)
+	addField := func(label, value string, st lipgloss.Style) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		lines := wrap(value, valueW)
+		for i, line := range lines {
+			prefix := " " + styleDim.Render(padPlain(label, labelW)) + " "
+			if i > 0 {
+				prefix = strings.Repeat(" ", labelW+2)
+			}
+			body = append(body, styledLine{text: prefix + st.Render(line)})
+		}
+	}
+
+	if m.detail == nil {
+		body = append(body, styledLine{text: " no paper selected", style: styleDim})
+		body = append(body, styledLine{})
+	} else {
+		p := m.detail
+		addField("title", p.Meta.Title, styleTitle)
+		addField("citekey", p.Meta.Citekey, styleDim)
+		body = append(body, styledLine{})
+
+		if len(p.Meta.Authors) > 0 {
+			var names []string
+			for _, a := range p.Meta.Authors {
+				names = append(names, strings.TrimSpace(a.Given+" "+a.Family))
+			}
+			addField("authors", strings.Join(names, ", "), lipgloss.Style{})
+		}
+		year := ""
+		if p.Meta.Year != nil {
+			year = fmt.Sprint(*p.Meta.Year)
+		}
+		addField("year", year, lipgloss.Style{})
+		venue := ""
+		if p.Meta.Venue != nil {
+			venue = p.Meta.Venue.Name
+			if p.Meta.Venue.Short != "" && p.Meta.Venue.Short != venue {
+				venue = p.Meta.Venue.Short + " · " + venue
+			}
+		}
+		addField("venue", venue, lipgloss.Style{})
+		addField("type", p.Meta.EntryType, lipgloss.Style{})
+		body = append(body, styledLine{})
+
+		if len(p.Meta.Tags) > 0 {
+			var tags []string
+			for _, t := range p.Meta.Tags {
+				tags = append(tags, "#"+t)
+			}
+			addField("tags", strings.Join(tags, "  "), styleCyan)
+		} else {
+			addField("tags", "—", styleDim)
+		}
+		review := p.State.Review.Status
+		reviewStyle := styleGreen
+		if p.State.Review.Status == "pending" {
+			reviewStyle = styleYellow
+		}
+		if p.State.CitekeyLocked {
+			review += "  ·  citekey locked"
+		}
+		addField("review", review, reviewStyle)
+		if p.State.Index.Error != "" {
+			addField("issue", p.State.Index.Error, styleRed)
+		}
+		if !p.State.CitekeyLocked {
+			if suggested := m.st.GenerateCitekey(p.Meta); suggested != p.Meta.Citekey {
+				addField("rename", suggested+"  (press x)", styleYellow)
+			}
+		}
+		if p.Meta.DOI != "" {
+			addField("doi", p.Meta.DOI, styleDim)
+		}
+		if p.Meta.ArxivID != "" {
+			addField("arxiv", p.Meta.ArxivID, styleDim)
+		}
+		if p.Meta.URL != "" {
+			addField("url", p.Meta.URL, styleDim)
+		}
+		body = append(body, styledLine{})
+
+		notes := 0
+		var files []string
+		for _, a := range m.attachments {
+			if a.Kind == "note" {
+				notes++
+				continue
+			}
+			files = append(files, a.Kind+"/"+baseName(a.Rel))
+		}
+		if notes > 0 {
+			addField("note", "present", styleGreen)
+		} else {
+			addField("note", "none", styleDim)
+		}
+		if len(files) > 0 {
+			addField("files", strings.Join(files, "  "), styleDim)
+		}
+
+		md := m.markdownExcerpt()
+		if md != "" || p.Meta.Abstract != "" {
+			body = append(body, styledLine{})
+			body = append(body, styledLine{text: " " + styleFaint.Render(strings.Repeat("─", max(4, width-4))), style: lipgloss.Style{}})
+			body = append(body, styledLine{})
+			if md != "" {
+				body = append(body, styledLine{text: " " + styleDim.Render("markdown"), style: lipgloss.Style{}})
+				for _, line := range wrap(md, width-2) {
+					body = append(body, styledLine{text: " " + line, style: lipgloss.Style{}})
+				}
+			} else {
+				body = append(body, styledLine{text: " " + styleDim.Render("abstract"), style: lipgloss.Style{}})
+				for _, line := range wrap(p.Meta.Abstract, width-2) {
+					body = append(body, styledLine{text: " " + line, style: lipgloss.Style{}})
+				}
+			}
+		}
+	}
+	m.detailMax = max(0, len(body)-visible)
+	if m.detailTop > m.detailMax {
+		m.detailTop = m.detailMax
+	}
+	if m.detailTop < 0 {
+		m.detailTop = 0
+	}
+	if m.detailMax > 0 && m.detailTop > 0 {
+		pct := m.detailTop * 100 / m.detailMax
+		suffix = fmt.Sprintf("%d%%", pct)
+	}
+	head := m.paneHeader("DETAIL", suffix, width, m.focus == focusDetail)
+	if m.detailTop > 0 && m.detailTop < len(body) {
+		body = body[m.detailTop:]
+	}
+	return joinPanes(append([]styledLine{head}, body...), width, height, "")
+}
+
+func joinPanes(lines []styledLine, width, height int, gutter string) string {
+	out := make([]string, 0, height)
+	for i := 0; i < height; i++ {
+		var line styledLine
+		if i < len(lines) {
+			line = lines[i]
+		}
+		rendered := renderFixed(line.text, line.style, width)
+		if gutter != "" {
+			rendered += styleFaint.Render(gutter)
+		}
+		out = append(out, rendered)
+	}
+	return strings.Join(out, "\n")
+}
+
+// renderFixed fits plain or pre-styled text into exactly width columns,
+// painting horizontal padding with the same background as the content.
+func renderFixed(text string, st lipgloss.Style, width int) string {
+	text = truncateStr(text, width)
+	pad := width - lipgloss.Width(text)
+	out := st.Render(text)
+	if pad > 0 {
+		out += strings.Repeat(" ", pad)
+	}
+	return out
+}
+
+func (m *Model) renderHelp() string {
+	help := `Global
+  /            search prompt
+  :            command prompt
+  ?            this help
+  q            quit
+  1 2 3        focus tags / results / detail
+  tab          cycle focus (also shift+tab)
+  esc          back to papers / close panel
+  p            pending metadata review
+  L            structured logs
+  b            background tasks
+  R            reindex changed files
+  r            reload from disk
+  s            cycle sort
+
+Papers
+  j k ↑ ↓      move
+  g G          first / last
+  ctrl+d/u     page
+  space        mark paper; in the tag pane: collapse/expand
+  t            add/remove tags on selection
+  o            open PDF
+  e            open note (or create one)
+  x            rename to suggested citekey
+  c            convert PDF to Markdown
+  d            move paper to .trash
+  enter        open detail pane
+
+Detail
+  j k          scroll
+  g G          top / bottom
+  ctrl+d/u     page
+
+Search
+  attention transformer          implicit AND, BM25 ranked
+  title:"attention is all"       phrase in a field
+  author:vaswani venue:neurips   field filters
+  year:2015..2020 added:2026-01..2026-11
+  tag:ml/llm                     tag and descendants
+  tag:ml/llm/                    exactly this level
+  NOT tag:status/skim   -tag:...
+  sort:year- sort:added- sort:title+ sort:relevance
+
+Commands
+  :tag add ml/llm       :tag rm status/skim
+  :tag rename A B       :tag merge A B
+  :meta set title=...   :refresh
+  :rename old new       :rekey [--dry-run|--force]
+  :reindex [--rebuild]  :bib export
+  :note new md          :convert
+  :query save NAME      :query run NAME
+  :sort year-           :quit
+
+Review
+  j/k field   space toggle   a accept   tab candidate
+  n/P paper   K keep         esc close`
+	lines := strings.Split(help, "\n")
+	visible := max(1, m.height-3)
+	if m.logTop > len(lines)-visible {
+		m.logTop = max(0, len(lines)-visible)
+	}
+	if m.logTop < 0 {
+		m.logTop = 0
+	}
+	end := m.logTop + visible
+	if end > len(lines) {
+		end = len(lines)
+	}
+	body := make([]styledLine, 0, visible)
+	for _, l := range lines[m.logTop:end] {
+		st := lipgloss.Style{}
+		if strings.HasPrefix(l, "Global") || strings.HasPrefix(l, "Papers") || strings.HasPrefix(l, "Detail") ||
+			strings.HasPrefix(l, "Search") || strings.HasPrefix(l, "Commands") || strings.HasPrefix(l, "Review") {
+			st = styleAccent
+		} else if strings.HasPrefix(l, "  ") {
+			st = styleDim
+		}
+		body = append(body, styledLine{text: " " + l, style: st})
+	}
+	return m.renderFull("HELP", "j/k scroll", body, 0)
+}
+
+func (m *Model) renderLogs() string {
+	visible := max(1, m.height-3)
+	if m.logTop > len(m.logLines)-visible {
+		m.logTop = max(0, len(m.logLines)-visible)
+	}
+	if m.logTop < 0 {
+		m.logTop = 0
+	}
+	end := m.logTop + visible
+	if end > len(m.logLines) {
+		end = len(m.logLines)
+	}
+	var body []styledLine
+	for _, l := range m.logLines[m.logTop:end] {
+		body = append(body, styledLine{text: " " + l, style: lipgloss.Style{}})
+	}
+	if len(body) == 0 {
+		body = append(body, styledLine{text: " no log entries", style: styleDim})
+	}
+	return m.renderFull("LOGS", "j/k scroll", body, 0)
+}
+
+func (m *Model) renderTasks() string {
+	var body []styledLine
+	for _, t := range m.tasks {
+		state := "running"
+		st := styleYellow
+		if t.Done {
+			state = "done"
+			st = styleGreen
+			if t.Err != "" {
+				state = "error: " + t.Err
+				st = styleRed
+			}
+		}
+		body = append(body, styledLine{
+			text:  fmt.Sprintf(" %-22s %s  %s", t.Label, t.Started.Format("15:04:05"), state),
+			style: st,
+		})
+	}
+	if len(body) == 0 {
+		body = append(body, styledLine{text: " no background tasks", style: styleDim})
+	}
+	return m.renderFull("TASKS", "", body, 0)
+}
+
+func (m *Model) renderFull(title, hint string, body []styledLine, top int) string {
+	visible := max(1, m.height-2)
+	if top < 0 {
+		top = 0
+	}
+	if top > len(body)-visible {
+		top = max(0, len(body)-visible)
+	}
+	if top > 0 && top < len(body) {
+		body = body[top:]
+	}
+	lines := []styledLine{m.paneHeader(title, hint, m.width, true)}
+	lines = append(lines, body...)
+	out := make([]string, 0, m.height)
+	for i := 0; i < m.height; i++ {
+		text := ""
+		st := lipgloss.Style{}
+		if i < len(lines) {
+			text, st = lines[i].text, lines[i].style
+		}
+		out = append(out, renderFixed(text, st, m.width))
+	}
+	out[m.height-1] = styleDim.Render(padPlain("  esc close", m.width))
+	return strings.Join(out, "\n")
+}
+
+func (m *Model) renderReview() string {
+	var body []styledLine
+	p := m.currentReview()
+	if p == nil {
+		body = append(body, styledLine{text: " review queue empty", style: styleDim})
+		return m.renderFull("REVIEW", "esc close", body, 0)
+	}
+	body = append(body, styledLine{text: fmt.Sprintf(" %d/%d  %s", m.reviewCursor+1, len(m.reviewPapers), p.Meta.Title), style: styleTitle})
+	body = append(body, styledLine{text: " " + p.Meta.Citekey + "  ·  " + p.State.Review.Reason, style: styleDim})
+	body = append(body, styledLine{})
+	if len(p.State.Review.Candidates) > 0 {
+		c := p.State.Review.Candidates[m.reviewCand]
+		body = append(body, styledLine{text: fmt.Sprintf(" candidate %d/%d   %s   confidence %.2f", m.reviewCand+1, len(p.State.Review.Candidates), c.Source, c.Confidence), style: styleAccent})
+		body = append(body, styledLine{})
+		for i, f := range m.reviewFields {
+			check := "[ ]"
+			if m.reviewSel[i] {
+				check = "[x]"
+			}
+			cur := truncateStr(fieldPreview(p.Meta, f), 26)
+			cand := truncateStr(candidateValue(c.Fields[f]), 56)
+			text := fmt.Sprintf(" %s %-12s %-27s → %s", check, f, cur, cand)
+			st := lipgloss.Style{}
+			if i == m.reviewFieldCursor {
+				st = styleSelected
+			} else if m.reviewSel[i] {
+				st = styleDim
+			}
+			body = append(body, styledLine{text: text, style: st})
+		}
+	}
+	return m.renderFull("REVIEW", "j/k field  space toggle  a accept  tab candidate  n/P paper  K keep", body, 0)
+}
+
+func (m *Model) renderConfirm() string {
+	box := styleBox.Render(
+		styleDim.Render("confirm") + "\n\n " + m.confirm + "\n\n " + styleDim.Render("[y] yes    [n] no"),
+	)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func padPlain(s string, width int) string {
+	s = truncateStr(s, width)
+	if pad := width - lipgloss.Width(s); pad > 0 {
+		s += strings.Repeat(" ", pad)
+	}
+	return s
+}
+
+func fitPlain(s string, width int) string {
+	return padPlain(s, width)
+}
+
+func elideMiddle(s string, width int) string {
+	r := []rune(s)
+	if width <= 0 {
+		return ""
+	}
+	if len(r) <= width {
+		return s
+	}
+	if width < 6 {
+		return string(r[:max(1, width-1)]) + "…"
+	}
+	left := (width - 1) / 2
+	right := width - 1 - left
+	return string(r[:left]) + "…" + string(r[len(r)-right:])
+}
+
+func wrap(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	var out []string
+	for _, para := range strings.Split(s, "\n") {
+		if para == "" {
+			out = append(out, "")
+			continue
+		}
+		fields := strings.Fields(para)
+		line := ""
+		for _, f := range fields {
+			if lipgloss.Width(line)+lipgloss.Width(f)+1 > width {
+				if line != "" {
+					out = append(out, line)
+				}
+				line = f
+			} else if line == "" {
+				line = f
+			} else {
+				line += " " + f
+			}
+		}
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func truncateStr(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= n {
+		return s
+	}
+	if n == 1 {
+		return "…"
+	}
+	return ansi.Truncate(s, n, "…")
+}
+
+func baseName(p string) string {
+	p = strings.ReplaceAll(p, "\\", "/")
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func fieldPreview(m model.Meta, f string) string {
+	switch f {
+	case "title":
+		return m.Title
+	case "year":
+		if m.Year == nil {
+			return ""
+		}
+		return fmt.Sprint(*m.Year)
+	case "doi":
+		return m.DOI
+	case "arxiv_id":
+		return m.ArxivID
+	case "url":
+		return m.URL
+	case "venue":
+		if m.Venue == nil {
+			return ""
+		}
+		return m.Venue.Name
+	case "authors":
+		var out []string
+		for _, a := range m.Authors {
+			out = append(out, a.Family)
+		}
+		return strings.Join(out, ", ")
+	case "abstract":
+		return m.Abstract
+	}
+	return ""
+}
+
+func candidateValue(v interface{}) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case []interface{}:
+		var parts []string
+		for _, item := range x {
+			parts = append(parts, candidateValue(item))
+		}
+		return strings.Join(parts, ", ")
+	case map[string]interface{}:
+		var parts []string
+		for _, k := range []string{"family", "given", "name", "short", "kind", "year", "volume", "pages"} {
+			if val, ok := x[k]; ok && val != nil && fmt.Sprint(val) != "" {
+				parts = append(parts, k+"="+fmt.Sprint(val))
+			}
+		}
+		if len(parts) == 0 {
+			return fmt.Sprint(x)
+		}
+		return strings.Join(parts, " ")
+	default:
+		return fmt.Sprint(x)
+	}
+}
+
+// markdownExcerpt reads the first converted Markdown file for the selected
+// paper so the detail pane prefers it over the abstract (FR-9.5).
+func (m *Model) markdownExcerpt() string {
+	if m.detail == nil {
+		return ""
+	}
+	for _, a := range m.attachments {
+		if a.Kind != "markdown" {
+			continue
+		}
+		low := strings.ToLower(a.Rel)
+		if !strings.HasSuffix(low, ".md") && !strings.HasSuffix(low, ".markdown") {
+			continue
+		}
+		f, err := os.Open(filepath.Join(m.detail.Dir, "attachments", a.Rel))
+		if err != nil {
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(f, 256*1024))
+		f.Close()
+		if err != nil {
+			continue
+		}
+		return string(data)
+	}
+	return ""
+}
