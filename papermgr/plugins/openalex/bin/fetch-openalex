@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+"""OpenAlex metadata plugin for PaperManage.
+
+Speaks JSON-RPC 2.0 over stdio, one JSON object per line. Logs go to stderr.
+Resolves a DOI or arXiv ID directly, and falls back to an OpenAlex title
+search. Configuration (plugin.toml + library config.toml):
+
+    mailto   contact address included in API requests (optional)
+    api_key  free OpenAlex API key; falls back to $OPENALEX_API_KEY
+    timeout_seconds  per-request HTTP timeout (default 12)
+"""
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+PROTOCOL = "papermgr-plugin/v1"
+CONFIG = {}
+BASE_URL = "https://api.openalex.org"
+
+SELECT = ",".join([
+    "id", "doi", "title", "display_name", "publication_year",
+    "publication_date", "type", "type_crossref", "ids", "language",
+    "authorships", "biblio", "primary_location",
+    "abstract_inverted_index", "keywords", "topics", "cited_by_count",
+])
+
+# OpenAlex work type -> BibTeX-ish entry_type used by meta.json.
+ENTRY_TYPES = {
+    "article": "article",
+    "journal-article": "article",
+    "review": "article",
+    "preprint": "preprint",
+    "posted-content": "preprint",
+    "conference-paper": "inproceedings",
+    "proceedings-article": "inproceedings",
+    "book": "book",
+    "book-chapter": "incollection",
+    "dissertation": "phdthesis",
+    "report": "techreport",
+}
+
+SOURCE_KINDS = {
+    "journal": "journal",
+    "conference": "conference",
+    "book": "book",
+    "book series": "book",
+    "ebook platform": "book",
+}
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def config_value(key, default=None):
+    value = CONFIG.get(key)
+    if value not in (None, ""):
+        return value
+    return default
+
+
+def timeout_seconds():
+    try:
+        return float(config_value("timeout_seconds", 12))
+    except (TypeError, ValueError):
+        return 12.0
+
+
+def api_key():
+    return str(config_value("api_key", os.environ.get("OPENALEX_API_KEY", "")) or "").strip()
+
+
+def base_url():
+    return str(config_value("base_url", BASE_URL)).rstrip("/")
+
+
+def _request(url, timeout):
+    headers = {
+        "User-Agent": "papermgr-openalex/0.1 (mailto:%s)" % config_value("mailto", "user@example.com"),
+        "Accept": "application/json",
+    }
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def get_json(path, params):
+    query = [(k, v) for k, v in params.items() if v not in (None, "", [])]
+    mailto = config_value("mailto")
+    if mailto:
+        query.append(("mailto", mailto))
+    key = api_key()
+    if key:
+        query.append(("api_key", key))
+    url = base_url() + path
+    if query:
+        url += "?" + urllib.parse.urlencode(query, doseq=True)
+    try:
+        return _request(url, timeout_seconds())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        if e.code == 404:
+            return None
+        # An unactivated or revoked key should not disable the plugin:
+        # keyless requests still work on the free shared budget.
+        if key and e.code in (401, 403):
+            log("OpenAlex rejected api_key (HTTP %d); retrying without it: %s" % (e.code, detail[:300]))
+            keyless = [(k, v) for k, v in query if k != "api_key"]
+            retry = base_url() + path + "?" + urllib.parse.urlencode(keyless, doseq=True)
+            try:
+                return _request(retry, timeout_seconds())
+            except urllib.error.HTTPError as e2:
+                raise RuntimeError("OpenAlex HTTP %d: %s" % (e2.code, e2.read().decode("utf-8", "replace")[:300]))
+        raise RuntimeError("OpenAlex HTTP %d: %s" % (e.code, detail[:300]))
+    except urllib.error.URLError as e:
+        raise RuntimeError("OpenAlex request failed: %s" % e.reason)
+
+
+def normalize_doi(raw):
+    doi = (raw or "").strip()
+    doi = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", doi, flags=re.I)
+    return doi.rstrip(".,; ")
+
+
+def normalize_arxiv(raw):
+    arxiv = (raw or "").strip()
+    arxiv = re.sub(r"^arxiv:\s*", "", arxiv, flags=re.I)
+    arxiv = re.sub(r"^https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/", "", arxiv, flags=re.I)
+    arxiv = re.sub(r"\.pdf$", "", arxiv, flags=re.I)
+    return re.sub(r"v\d+$", "", arxiv)
+
+
+def arxiv_from_doi(doi):
+    match = re.match(r"^10\.48550/arxiv\.(.+)$", doi, re.I)
+    return normalize_arxiv(match.group(1)) if match else ""
+
+
+def abstract_from_inverted(index):
+    if not index:
+        return ""
+    positioned = {}
+    for word, positions in index.items():
+        for pos in positions or []:
+            positioned[pos] = word
+    return " ".join(positioned[pos] for pos in sorted(positioned))
+
+
+def split_name(name):
+    parts = (name or "").split()
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return "", parts[0]
+    return " ".join(parts[:-1]), parts[-1]
+
+
+def strip_orcid(value):
+    if not value:
+        return None
+    return re.sub(r"^https?://orcid\.org/", "", value, flags=re.I) or None
+
+
+def work_authors(work):
+    authors = []
+    for authorship in work.get("authorships") or []:
+        person = authorship.get("author") or {}
+        name = (person.get("display_name") or authorship.get("raw_author_name") or "").strip()
+        if not name:
+            continue
+        given, family = split_name(name)
+        affiliations = []
+        for inst in authorship.get("institutions") or []:
+            inst_name = (inst.get("display_name") or "").strip()
+            if inst_name and inst_name not in affiliations:
+                affiliations.append(inst_name)
+        if not affiliations:
+            for raw in authorship.get("raw_affiliation_strings") or []:
+                raw = (raw or "").strip()
+                if raw and raw not in affiliations:
+                    affiliations.append(raw)
+        authors.append({
+            "given": given,
+            "family": family,
+            "orcid": strip_orcid(person.get("orcid")),
+            "affiliation": affiliations,
+        })
+    return authors
+
+
+def work_keywords(work):
+    scored = []
+    for kw in work.get("keywords") or []:
+        name = (kw.get("display_name") or "").strip()
+        if name:
+            scored.append((float(kw.get("score") or 0), name))
+    scored.sort(reverse=True)
+    words = []
+    for _, name in scored:
+        if name not in words:
+            words.append(name)
+    if not words:
+        for topic in work.get("topics") or []:
+            name = (topic.get("display_name") or "").strip()
+            if name and name not in words:
+                words.append(name)
+    return words[:10]
+
+
+def pages_of(biblio):
+    first = (biblio.get("first_page") or "").strip()
+    last = (biblio.get("last_page") or "").strip()
+    if first and last and first != last:
+        return first + "-" + last
+    return first or last
+
+
+def work_fields(work):
+    location = work.get("primary_location") or {}
+    source = location.get("source") or {}
+    biblio = work.get("biblio") or {}
+    work_type = (work.get("type") or "").lower()
+    source_type = (source.get("type") or "").lower()
+
+    entry_type = ENTRY_TYPES.get(work_type, "misc")
+    if work_type == "article" and source_type == "conference":
+        entry_type = "inproceedings"
+
+    doi = normalize_doi(work.get("doi"))
+    arxiv = arxiv_from_doi(doi)
+    venue_name = (source.get("display_name") or location.get("raw_source_name") or "").strip()
+    publisher = "" if source_type == "repository" else (source.get("host_organization_name") or "").strip()
+
+    venue = {
+        "name": venue_name,
+        "short": venue_name,
+        "kind": SOURCE_KINDS.get(source_type, "other"),
+        "volume": (biblio.get("volume") or "").strip() or None,
+        "issue": (biblio.get("issue") or "").strip() or None,
+        "pages": pages_of(biblio) or None,
+        "publisher": publisher or None,
+    }
+
+    url = (location.get("landing_page_url") or "").strip()
+    if not url and doi:
+        url = "https://doi.org/" + doi
+    if not url and work.get("id"):
+        url = work["id"]
+
+    fields = {
+        "title": (work.get("title") or work.get("display_name") or "").strip(),
+        "authors": work_authors(work),
+        "year": work.get("publication_year") or 0,
+        "entry_type": entry_type,
+        "doi": doi,
+        "arxiv_id": arxiv,
+        "url": url,
+        "abstract": abstract_from_inverted(work.get("abstract_inverted_index")),
+        "keywords": work_keywords(work),
+        "language": (work.get("language") or "").strip(),
+        "venue": venue,
+    }
+    return {k: v for k, v in fields.items() if v not in (None, "", [], {})}
+
+
+def similarity(a, b):
+    at = set(re.findall(r"[a-z0-9]+", (a or "").lower()))
+    bt = set(re.findall(r"[a-z0-9]+", (b or "").lower()))
+    if not at or not bt:
+        return 0.0
+    return len(at & bt) / float(len(at | bt))
+
+
+def lookup_doi(doi):
+    return get_json("/works/doi:" + urllib.parse.quote(doi, safe="/"), {"select": SELECT})
+
+
+def search_title(title, year):
+    params = {"search": title, "per-page": 5, "select": SELECT}
+    if year:
+        params["filter"] = "from_publication_date:%d-01-01,to_publication_date:%d-12-31" % (year - 1, year + 1)
+    data = get_json("/works", params)
+    if not data:
+        return []
+    return data.get("results") or []
+
+
+def metadata_fetch(params):
+    hints = params.get("hints") or {}
+    doi = normalize_doi(hints.get("doi"))
+    arxiv = normalize_arxiv(hints.get("arxiv_id"))
+    title_guess = (hints.get("title_guess") or hints.get("filename") or "").strip()
+    try:
+        year = int(hints.get("year") or 0)
+    except (TypeError, ValueError):
+        year = 0
+
+    if not arxiv and doi:
+        arxiv = arxiv_from_doi(doi)
+
+    candidates = []
+    seen = set()
+
+    def add(work, confidence):
+        if not work:
+            return
+        fields = work_fields(work)
+        if not fields.get("title"):
+            return
+        # Several OpenAlex records can describe the same paper (preprint,
+        # proceedings version, book chapter). Keep the best-ranked one.
+        key = re.sub(r"[^a-z0-9]+", "", fields["title"].lower())
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append({
+            "fields": fields,
+            "confidence": round(confidence, 2),
+            "source": "openalex",
+        })
+
+    looked = set()
+    if doi:
+        looked.add(doi.lower())
+        try:
+            add(lookup_doi(doi), 0.96)
+        except Exception as e:  # noqa: BLE001
+            log("OpenAlex DOI lookup failed: %s" % e)
+    if arxiv and not candidates:
+        arxiv_doi = "10.48550/arXiv." + arxiv
+        if arxiv_doi.lower() not in looked:
+            try:
+                add(lookup_doi(arxiv_doi), 0.94)
+            except Exception as e:  # noqa: BLE001
+                log("OpenAlex arXiv lookup failed: %s" % e)
+
+    if not candidates and title_guess and len(re.findall(r"[A-Za-z0-9]+", title_guess)) >= 2:
+        try:
+            found = []
+            for work in search_title(title_guess, year):
+                fields = work_fields(work)
+                title = fields.get("title", "")
+                if not title:
+                    continue
+                sim = similarity(title_guess, title)
+                if sim < 0.3:
+                    continue
+                confidence = 0.25 + 0.6 * sim
+                if year and fields.get("year") and abs(int(fields["year"]) - year) <= 1:
+                    confidence += 0.05
+                # Same-titled versions are common (preprint, proceedings,
+                # book chapter); prefer the canonical, most-cited record.
+                found.append((min(0.9, confidence), int(work.get("cited_by_count") or 0), work))
+            found.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            for confidence, _, work in found:
+                add(work, confidence)
+        except Exception as e:  # noqa: BLE001
+            log("OpenAlex title search failed: %s" % e)
+
+    candidates.sort(key=lambda c: c["confidence"], reverse=True)
+    return {"candidates": candidates[:3]}
+
+
+def dispatch(req):
+    method = req.get("method")
+    params = req.get("params") or {}
+    if method == "init":
+        global CONFIG
+        CONFIG = params.get("config") or {}
+        return {"ok": True, "protocol": PROTOCOL}
+    if method == "health":
+        return {"ok": True, "missing": []}
+    if method == "metadata.fetch":
+        return metadata_fetch(params)
+    raise ValueError("unsupported method: %s" % method)
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = {}
+        try:
+            req = json.loads(line)
+            result = dispatch(req)
+            resp = {"jsonrpc": "2.0", "id": req.get("id"), "result": result}
+        except Exception as e:  # noqa: BLE001
+            log("error: %s" % e)
+            resp = {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": -32000, "message": str(e)}}
+        sys.stdout.write(json.dumps(resp) + "\n")
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()

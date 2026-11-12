@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -138,6 +139,25 @@ func TestDetailScroll(t *testing.T) {
 	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
 	if m.detailTop != 20 {
 		t.Fatalf("detail bottom = %d, want 20", m.detailTop)
+	}
+}
+
+func TestDetailShowsJournalSeparately(t *testing.T) {
+	s := testStore(t)
+	m := newModel(s)
+	m.detail = &model.Paper{Meta: model.Meta{
+		Title: "T",
+		Venue: &model.Venue{
+			Name:  "IEEE Journal of Selected Topics",
+			Short: "IEEE J. Sel. Top.",
+			Kind:  "journal",
+		},
+	}}
+	got := m.renderDetail(100, 40)
+	for _, want := range []string{"journal", "IEEE Journal of Selected Topics", "venue", "IEEE J. Sel. Top."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("detail missing %q:\n%s", want, got)
+		}
 	}
 }
 

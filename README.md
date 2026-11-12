@@ -8,7 +8,9 @@ plain files as the source of truth.
 cd papermgr
 make test
 make build
-./scripts/demo.sh
+papermgr tui
 ```
 
-See [`papermgr/README.md`](papermgr/README.md) for the full guide.
+The working library lives at `~/Papers/papermgr` and is registered in
+`~/.config/papermgr/config.toml`. See
+[`papermgr/README.md`](papermgr/README.md) for the full guide.

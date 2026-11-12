@@ -1,6 +1,6 @@
 BINARY := bin/papermgr
 
-.PHONY: build test vet install demo clean
+.PHONY: build test vet install clean
 
 build:
 	CGO_ENABLED=0 go build -o $(BINARY) ./cmd/papermgr
@@ -13,9 +13,6 @@ vet:
 
 install:
 	CGO_ENABLED=0 go install ./cmd/papermgr
-
-demo:
-	./scripts/demo.sh
 
 clean:
 	rm -rf bin

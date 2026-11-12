@@ -58,6 +58,24 @@ Timeouts: metadata 30s, extract 120s, convert 1800s, capture 60s. A timeout or
 crash is a failure for that plugin only; the core degrades (metadata lowers
 confidence, extraction records an error, conversion is logged).
 
+## Bundled plugins
+
+| Plugin | Priority | Lookup order | Notes |
+|---|---|---|---|
+| `plugins/openalex` | 110 | DOI → arXiv ID → title search | ORCIDs, affiliations, abstracts, keywords, venue and pages |
+| `plugins/crossref` | 100 | DOI / arXiv ID → title search | Crossref publisher metadata and arXiv Atom API |
+
+Higher priority plugins are applied first; a later plugin only fills fields
+that are still empty. `openalex` accepts `mailto`, `api_key` (falls back to
+`$OPENALEX_API_KEY`) and `timeout_seconds` in its plugin config. The API key is
+optional: keyless requests work on OpenAlex's free daily budget.
+
+```toml
+[plugins.openalex.config]
+mailto = "you@example.com"
+api_key = "..."
+```
+
 ## Minimal shell plugin
 
 ```sh

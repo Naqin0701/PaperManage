@@ -403,14 +403,20 @@ func (m *Model) renderDetail(width, height int) string {
 			year = fmt.Sprint(*p.Meta.Year)
 		}
 		addField("year", year, lipgloss.Style{})
-		venue := ""
-		if p.Meta.Venue != nil {
-			venue = p.Meta.Venue.Name
-			if p.Meta.Venue.Short != "" && p.Meta.Venue.Short != venue {
-				venue = p.Meta.Venue.Short + " · " + venue
+		if v := p.Meta.Venue; v != nil {
+			if v.Kind == "journal" {
+				addField("journal", v.Name, lipgloss.Style{})
+				if v.Short != "" && v.Short != v.Name {
+					addField("venue", v.Short, lipgloss.Style{})
+				}
+			} else {
+				venue := v.Name
+				if v.Short != "" && v.Short != venue {
+					venue = v.Short + " · " + venue
+				}
+				addField("venue", venue, lipgloss.Style{})
 			}
 		}
-		addField("venue", venue, lipgloss.Style{})
 		addField("type", p.Meta.EntryType, lipgloss.Style{})
 		body = append(body, styledLine{})
 

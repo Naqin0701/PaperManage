@@ -1,44 +1,44 @@
- papermgr  /home/naqin/papermgr-demo/library                                                                                            4 results  ·  index fresh
+ papermgr  /home/naqin/Papers/papermgr                                                                                      30 results  ·  index fresh
 
- TAGS                 10  │ ▏RESULTS                                                    4  │  DETAIL
-▌   All papers         4  │          unpublished notes                                     │  title    Attention Is All You Need
-    Pending review     0  │     1997 Long Short-Term Memory                                │  citekey  vaswani-2017-attention-all-you
-  ▾ ml                 3  │     2020 Retrieval-Augmented Generation for Knowledge-Intens…  │
-  │ ▾ llm              3  │ ▸   2017 Attention Is All You Need                             │  authors  Ashish Vaswani, Noam Shazeer, Niki Parmar,
-  │ │ • rag            1  │                                                                │           Jakob Uszkoreit, Llion Jones, Aidan N. Gomez,
-  │ │ • rnn            1  │                                                                │           Lukasz Kaiser, Illia Polosukhin
-  │ │ • transformer    1  │                                                                │  year     2017
-  ▾ status             4  │                                                                │  venue    arXiv
-  │ • read             2  │                                                                │  type     preprint
-  │ • reading          1  │                                                                │
-  │ • skim             1  │                                                                │  tags     #ml/llm/transformer #status/read
-  • test               1  │                                                                │  review   done
-  ── saved queries ──     │                                                                │  doi      10.48550/arXiv.1706.03762
-  ↳ recent                │                                                                │  arxiv    1706.03762
-                          │                                                                │  url      https://arxiv.org/abs/1706.03762
-                          │                                                                │
-                          │                                                                │  note     present
-                          │                                                                │  files    supplement/appendix.txt
-                          │                                                                │
-                          │                                                                │  ─────────────────────────────────────────────────────
-                          │                                                                │
-                          │                                                                │  abstract
-                          │                                                                │  The dominant sequence transduction models are based on
-                          │                                                                │  complex recurrent or convolutional neural networks in
-                          │                                                                │  an encoder-decoder configuration. The best performing
-                          │                                                                │  models also connect the encoder and decoder through an
-                          │                                                                │  attention mechanism. We propose a new simple network
-                          │                                                                │  architecture, the Transformer, based solely on
-                          │                                                                │  attention mechanisms, dispensing with recurrence and
-                          │                                                                │  convolutions entirely. Experiments on two machine
-                          │                                                                │  translation tasks show these models to be superior in
-                          │                                                                │  quality while being more parallelizable and requiring
-                          │                                                                │  significantly less time to train. Our model achieves
-                          │                                                                │  28.4 BLEU on the WMT 2014 English-to-German translation
-                          │                                                                │  task, improving over the existing best results,
-                          │                                                                │  including ensembles by over 2 BLEU. On the WMT 2014
-                          │                                                                │  English-to-French translation task, our model
-                          │                                                                │  establishes a new single-model state-of-the-art BLEU
-                          │                                                                │  score of 41.8 after training for 3.5 days on eight
-                          │                                                                │  GPUs, a small fraction of the training costs of the
+ TAGS                 27  │ ▏RESULTS                                                   30  │  DETAIL
+▌   All papers        30  │ ▸   2026 Multi-Sensor Mapping of Aquatic Vegetation Using Se…  │  title    Multi-Sensor Mapping of Aquatic Vegetation
+    Pending review     0  │     2026 A Robust Spatiotemporal Fusion Algorithm for Wetlan…  │           Using Sentinel-2, SAR–Optical Fusion and
+  ▾ application       10  │     2026 All-Weather Flood Mapping Using a Synergistic Multi…  │           Derived Spectral and SAR Indices in South
+  │ • aquatic          1  │     2026 Thick Cloud Removal Using Cloud Mask-Guided SAR-Opt…  │           Florida
+  │ • fire             1  │     2026 STAIR-Tr: Transformer-Based Gap Filling for Multiso…  │  citekey  harandi-2026-multi-sensor-mapping-aquatic
+  │ • flood            1  │     2026 RCFNet: Reliability-Aware Optical–SAR Fusion for Cl…  │
+  │ • land-cover       1  │     2026 OS-MambaDiff: An Optical-SAR Fusion Diffusion Frame…  │  authors  Bella Harandi, Nathan Gavin, Jing Hu, Weiwei
+  │ • mangrove         2  │     2026 Multisensor Fusion for Monitoring Shorelines and Co…  │           Zhan
+  │ • shoreline        1  │     2026 MPCRNet: A Multimodal Progressive Network for Thin …  │  year     2026
+  │ • snow             1  │     2026 IOS-Net: An Information-Progressive Optical-SAR Ima…  │  venue    Remote Sens. · Remote Sensing
+  │ • water            1  │     2026 DST-CR: A Dual Sparse Transformer Network for Cross…  │  type     article
+  │ • wetland          1  │     2026 DCAN-CR: A Dual Cross-Modal Attention Network for C…  │
+  • benchmark          1  │     2026 Bridging Extreme Data Gaps: SAR–Optical Fusion Guid…  │  tags     #application/aquatic #multi-sensor
+  • cloud-removal     15  │     2026 An Empirical Comparison of Optical Time-Series Reco…  │           #status/to-read
+  • gap-filling        5  │     2025 Spatio-Temporal Fusion of Landsat and MODIS Data fo…  │  review   done
+  ▾ method            13  │     2025 Monitoring Mangrove Phenology Based on Gap Filling …  │  doi      10.3390/rs18183086
+  │ • attention        2  │     2025 DMDiff: A Dual-Branch Multimodal Conditional Guided…  │  url      https://doi.org/10.3390/rs18183086
+  │ • cnn              2  │     2025 Can Synthetic Aperture Radar Enhance the Quality of…  │
+  │ • diffusion        4  │     2025 Multimodal Diffusion Bridge With Attention-Based SA…  │  note     none
+  │ • gan              1  │     2025 Multisource Topographic-Enhanced Cloud Removal for …  │
+  │ • graph            1  │     2023 SAR-to-Optical Image Translation and Cloud Removal …  │  ─────────────────────────────────────────────────────
+  │ • mamba            1  │     2023 Former-CR: A Transformer-Based Thick Cloud Removal …  │
+  │ • transformer      4  │     2023 Cloud Removal in Remote Sensing Using Sequential-Ba…  │  abstract
+  • multi-sensor       5  │     2024 Multimodal and Multiresolution Data Fusion for High…  │  Accurate mapping of submerged aquatic vegetation (SAV)
+  • review             1  │     2023 Filling Then Spatio-Temporal Fusion for All-Sky MOD…  │  and emergent aquatic vegetation (EAV) is essential for
+  • sar-optical-fusion16  │     2022 High-Resolution Monitoring of the Snow Cover on the…  │  hydrologic assessment and wetland management. This
+  • spatiotemporal-fus…6  │     2022 Cloud Removal with SAR-Optical Data Fusion and Grap…  │  study developed and evaluated a multi-sensor aquatic
+  ▾ status            30  │     2022 Multisensor approach to land use and land cover map…  │  vegetation mapping framework using Sentinel-1 SAR,
+  │ • to-read         30  │     2022 Cloud Removal Based on SAR-Optical Remote Sensing D…  │  Sentinel-2 optical imagery, and derived spectral and
+                          │     2026 CloudBreaker: Breaking the cloud covers of Sentinel…  │  SAR indices in the Everglades stormwater treatment
+                          │                                                                │  areas (STAs) of South Florida. Three feature
+                          │                                                                │  configurations were compared: Sentinel-2 only (S2),
+                          │                                                                │  Sentinel-2 combined with Sentinel-1 (S2 + S1), and
+                          │                                                                │  Sentinel-2 and Sentinel-1 augmented with derived
+                          │                                                                │  spectral and SAR indices (S2 + S1 + Indices). Random
+                          │                                                                │  forest (RF) and TabNet classifiers were trained to
+                          │                                                                │  discriminate SAV and EAV. On the internal test set,
+                          │                                                                │  both classifiers achieved similar overall accuracies
+                          │                                                                │  (OA = 0.83–0.85), with no clear performance advantage
+                          │                                                                │  between RF and TabNet. However, differences emerged in
  1 tags   2 results   3 detail   tab cycle                                                                                 / search   ? help   q quit

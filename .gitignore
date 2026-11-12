@@ -1,9 +1,7 @@
 # Build output
 papermgr/bin/
-papermgr/demo-lib/
 
-# Local demo libraries / state
-/tmp-demo/
+# Local library state
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
@@ -13,3 +11,89 @@ papermgr/demo-lib/
 *.swp
 .idea/
 .vscode/
+# >>> pi-git-hygiene >>>
+# Managed by the pi git-commit-hygiene skill. Edit outside this block.
+# Secrets and environment
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.dist
+.venv/
+venv/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+# Public keys are safe to track
+!*.pub
+# Documents
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.odt
+*.ods
+*.odp
+*.rtf
+# Backups, temporary files, logs
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.tmp
+*.temp
+*~
+*.swp
+*.swo
+*.log
+# Media
+*.mp4
+*.m4v
+*.mov
+*.avi
+*.mkv
+*.webm
+*.flv
+*.wmv
+*.mpg
+*.mpeg
+*.mp3
+*.wav
+*.flac
+*.aac
+*.m4a
+*.ogg
+*.opus
+# Archives, disk images, databases
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.iso
+*.dmg
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+# OS and editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+# <<< pi-git-hygiene <<<

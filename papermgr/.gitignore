@@ -1,5 +1,4 @@
-bin/
-demo-lib/
+/bin/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

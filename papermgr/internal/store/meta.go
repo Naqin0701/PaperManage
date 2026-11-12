@@ -375,9 +375,15 @@ func fieldString(m model.Meta, f string) string {
 		b, _ := json.Marshal(m.Venue)
 		return string(b)
 	case "authors":
+		if len(m.Authors) == 0 {
+			return ""
+		}
 		b, _ := json.Marshal(m.Authors)
 		return string(b)
 	case "keywords":
+		if len(m.Keywords) == 0 {
+			return ""
+		}
 		b, _ := json.Marshal(m.Keywords)
 		return string(b)
 	}

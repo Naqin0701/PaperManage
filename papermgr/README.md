@@ -5,19 +5,13 @@ the main interface; the CLI is a first-class citizen. Every paper is a plain
 directory, `meta.json` is the source of truth, and `library.sqlite` is a
 throw-away search index.
 
-```text
- papermgr  ~/papermgr-demo/library                              4 results · index fresh
- TAGS                 9 │▏RESULTS                      4 │ DETAIL
-▸ All papers          4 │     unpublished notes           │ Attention Is All You Need
-  Pending review (1)  1 │    1997 Long Short-Term Memory  │ vaswani-2017-attention-all-you
-  ml                  3 │    2020 Retrieval-Augmented …   │ Ashish Vaswani, Noam Shazeer, …
-    llm               3 │▸   2017 Attention Is All You…   │ 2017 · arXiv · preprint
-      transformer     1 │                                 │ #ml/llm/transformer #status/read
-  status              4 │                                 │ review done
- 1 tags   2 results   3 detail   tab cycle        / search   ? help   q quit
-```
+Three panes: a tag outline on the left, the result list in the middle, and the
+selected paper's metadata, tags and abstract on the right. The header shows the
+library path, result count and index freshness; the footer shows the active
+pane and key hints.
 
-The live 150×44 capture is in [`docs/tui-screenshot.txt`](docs/tui-screenshot.txt).
+The live 150×44 capture of `~/Papers/papermgr` is in
+[`docs/tui-screenshot.txt`](docs/tui-screenshot.txt).
 
 ## Why
 
@@ -35,7 +29,8 @@ The live 150×44 capture is in [`docs/tui-screenshot.txt`](docs/tui-screenshot.t
 - Go 1.26+ (build only; the released binary is a single static executable, no CGO)
 - `pdftotext` from poppler-utils for full-text search (optional; the library
   remains usable without it, and `content:` searches explain what is missing)
-- Python 3 for the bundled Crossref/arXiv metadata plugin (optional)
+- Python 3 for the bundled Crossref/arXiv and OpenAlex metadata plugins
+  (optional)
 
 ## Build and install
 
@@ -57,8 +52,9 @@ CGO_ENABLED=0 go build -o bin/papermgr ./cmd/papermgr
 # 1. Create a library (or `papermgr init ~/papers`)
 papermgr init ~/papers
 
-# 2. Install the bundled metadata plugin (optional but recommended)
-papermgr plugin install ./plugins/crossref
+# 2. Install the bundled metadata plugins (optional but recommended)
+papermgr plugin install ./plugins/openalex
+papermgr plugin install ./plugins/crossref   # fallback for gaps OpenAlex leaves
 
 # 3. Ingest PDFs; metadata plugins fill title/authors/DOI and set confidence
 papermgr add ~/Downloads/*.pdf --tag ml/llm --tag status/to-read --yes
@@ -71,18 +67,14 @@ papermgr bib export
 ```
 
 The default library comes from (in order) `--library`, `$PAPERMGR_LIBRARY`, or
-`~/.config/papermgr/config.toml`. Two demo helpers are included:
+`~/.config/papermgr/config.toml`. In this workspace it is set to
+`~/Papers/papermgr`:
 
-```sh
-./scripts/setup-demo.sh           # stable demo at ~/papermgr-demo + default config
-./scripts/setup-demo.sh --reset   # rebuild it from scratch
-./scripts/demo.sh                 # isolated throw-away demo under /tmp
+```toml
+library = "/home/naqin/Papers/papermgr"
+editor = "nvim"
+viewer = "xdg-open"
 ```
-
-`setup-demo.sh` creates four papers (three resolved via Crossref/arXiv, one
-left in the review queue), a main note, a supplement, a saved query, installs
-the bundled Crossref plugin, and copies the binary to `~/.local/bin/papermgr`.
-It backs up any previous `~/.config/papermgr/config.toml` first.
 
 ## TUI
 
@@ -201,6 +193,12 @@ citekey_template = "{author}-{year}-{title}"
 title_words = 3
 index_supplements = false
 
+[plugins.openalex.config]
+mailto = "you@example.com"
+# optional free key from https://openalex.org/settings/api;
+# $OPENALEX_API_KEY is used when this is empty
+# api_key = ""
+
 [plugins.crossref.config]
 mailto = "you@example.com"
 ```
@@ -212,13 +210,28 @@ per line). stdout carries protocol frames only; stderr is forwarded to the
 structured log with the plugin name. Capabilities: `metadata`, `extract`,
 `convert`, `capture`.
 
-The bundled `plugins/crossref` resolves DOIs through Crossref and arXiv IDs via
-the arXiv Atom API, with a conservative title-search fallback. Install it with:
+Two metadata plugins are bundled:
+
+- `plugins/openalex` (priority 110) resolves DOIs and arXiv IDs through
+  OpenAlex, with a title-search fallback. It contributes ORCIDs, affiliations,
+  abstracts, keywords/topics, venue details and page ranges. An optional free
+  API key raises the daily request budget and can be set in `config.toml` or
+  `$OPENALEX_API_KEY`.
+- `plugins/crossref` (priority 100) resolves DOIs through Crossref and arXiv IDs
+  via the arXiv Atom API, with a conservative title-search fallback.
+
+When both are installed, OpenAlex is applied first and Crossref fills fields it
+left empty (metadata fields are only filled when missing). Install either or
+both with:
 
 ```sh
+papermgr plugin install ./plugins/openalex
 papermgr plugin install ./plugins/crossref
 papermgr plugin list
 ```
+
+For papers already in the library, re-run metadata lookup with
+`papermgr meta refresh <citekey>` (or `papermgr meta refresh --all --pending`).
 
 See [`docs/plugin-protocol.md`](docs/plugin-protocol.md) for the manifest,
 methods, timeouts and a minimal shell plugin.
