@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -74,20 +73,6 @@ func searchHits(s *store.Store, expr string) ([]model.SearchHit, error) {
 	return s.Index.Query(expr)
 }
 
-func printHits(hits []model.SearchHit) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "CITEKEY\tYEAR\tTITLE\tTAGS")
-	for _, h := range hits {
-		year := ""
-		if h.Year != nil {
-			year = fmt.Sprint(*h.Year)
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", h.Citekey, year, truncate(h.Title, 72), strings.Join(h.Tags, ","))
-	}
-	w.Flush()
-	fmt.Fprintf(os.Stderr, "%d result(s)\n", len(hits))
-}
-
 func truncate(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
@@ -97,48 +82,75 @@ func truncate(s string, n int) string {
 }
 
 func newSearchCmd() *cobra.Command {
-	return &cobra.Command{
+	var opts listOptions
+	cmd := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Search the library",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(func(s *store.Store) error {
-				hits, err := searchHits(s, strings.Join(args, " "))
+			expr, err := listQuery(strings.Join(args, " "), opts)
+			if err != nil {
+				return err
+			}
+			if err := prepareOutput(cmd, &opts); err != nil {
+				return err
+			}
+			var hits []model.SearchHit
+			var root string
+			err = withStore(func(s *store.Store) error {
+				root = s.Root
+				var err error
+				hits, err = searchHits(s, expr)
 				if err != nil {
 					if errors.Is(err, os.ErrNotExist) {
 						return codeErr(2, err)
 					}
 					return codeErr(2, err)
 				}
-				if flagJSON {
-					return printJSON(hits)
-				}
-				printHits(hits)
 				return nil
 			})
+			if err != nil {
+				return err
+			}
+			hits, total := applyLimit(hits, opts.Limit)
+			return outputHits(hits, total, root, opts)
 		},
 	}
+	addListFlags(cmd, &opts, "relevance")
+	return cmd
 }
 
 func newListCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list",
-		Short: "List all papers",
-		Args:  cobra.NoArgs,
+	var opts listOptions
+	cmd := &cobra.Command{
+		Use:   "list [query]",
+		Short: "List papers, optionally through a search query or fzf",
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(func(s *store.Store) error {
-				hits, err := searchHits(s, "sort:added-")
-				if err != nil {
-					return err
-				}
-				if flagJSON {
-					return printJSON(hits)
-				}
-				printHits(hits)
-				return nil
+			expr, err := listQuery(strings.Join(args, " "), opts)
+			if err != nil {
+				return err
+			}
+			if err := prepareOutput(cmd, &opts); err != nil {
+				return err
+			}
+			var hits []model.SearchHit
+			var root string
+			err = withStore(func(s *store.Store) error {
+				root = s.Root
+				var err error
+				hits, err = searchHits(s, expr)
+				return err
 			})
+			if err != nil {
+				return err
+			}
+			hits, total := applyLimit(hits, opts.Limit)
+			return outputHits(hits, total, root, opts)
 		},
 	}
+	addListFlags(cmd, &opts, "added-")
+	return cmd
 }
 
 type showOutput struct {

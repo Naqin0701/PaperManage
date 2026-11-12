@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -52,6 +53,13 @@ type tagItem struct {
 	all         bool
 	pending     bool
 	section     bool
+	selected    bool
+	excluded    bool
+}
+
+type logLine struct {
+	text  string
+	level string
 }
 
 type task struct {
@@ -74,9 +82,15 @@ type Model struct {
 	tagItems     []tagItem
 	tagCursor    int
 	collapsedTag map[string]bool
-	activeTag    string // "" = all
+	tagSel       map[string]bool
+	tagNot       map[string]bool
+	tagOr        bool
 	pending      bool
 	pendingCount int
+
+	zoom          bool
+	pendingScan   bool
+	dirtyChecking bool
 
 	query   string
 	sortKey string
@@ -103,7 +117,7 @@ type Model struct {
 	reviewSel         map[int]bool
 	reviewFieldCursor int
 
-	logLines []string
+	logLines []logLine
 	logTop   int
 
 	tasks        []task
@@ -111,11 +125,20 @@ type Model struct {
 	busyMsg      string
 	confirm      string
 	action       func() error
+	actionLabel  string
 	schemaIssues int
 	mu           sync.Mutex
 }
 
 type tickMsg time.Time
+type dirtyMsg struct {
+	n   int
+	err error
+}
+type pendingMsg struct {
+	count int
+	err   error
+}
 type reindexMsg struct {
 	stats store.SyncStats
 	err   error
@@ -149,23 +172,26 @@ func newModel(s *store.Store) *Model {
 		focus:        focusList,
 		marked:       map[string]bool{},
 		collapsedTag: map[string]bool{},
+		tagSel:       map[string]bool{},
+		tagNot:       map[string]bool{},
 		input:        ti,
 		sortKey:      "relevance",
 		reviewSel:    map[int]bool{},
 	}
 	m.refreshTags()
 	m.reloadHits()
-	m.checkDirty()
 	if issues, err := s.SchemaIssues(); err == nil {
 		m.schemaIssues = len(issues)
 	}
 	return m
 }
 
-func (m *Model) Init() tea.Cmd { return tick() }
+func (m *Model) Init() tea.Cmd {
+	return tea.Batch(tick(), m.checkDirtyCmd(), m.refreshPendingCmd())
+}
 
 func tick() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(15*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -174,8 +200,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case tickMsg:
-		m.checkDirty()
-		return m, tick()
+		if m.dirtyChecking {
+			return m, tick()
+		}
+		return m, tea.Batch(tick(), m.checkDirtyCmd())
+	case dirtyMsg:
+		m.dirtyChecking = false
+		if msg.err == nil {
+			m.dirty = msg.n
+		}
+		return m, nil
+	case pendingMsg:
+		m.pendingScan = false
+		if msg.err == nil {
+			m.pendingCount = msg.count
+			m.rebuildTagItemsLocked()
+		}
+		return m, nil
 	case reindexMsg:
 		m.busy = false
 		m.finishTask("reindex", msg.err)
@@ -186,10 +227,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(msg.stats.Errors) > 0 {
 				m.errMsg = fmt.Sprintf("%d index error(s); press L for logs", len(msg.stats.Errors))
 			}
+			m.dirty = 0
 		}
 		m.refreshTags()
 		m.reloadHits()
-		m.checkDirty()
 		return m, nil
 	case convertMsg:
 		m.busy = false
@@ -207,12 +248,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.finishTask(msg.label, msg.err)
 		if msg.err != nil {
 			m.errMsg = msg.err.Error()
-		} else {
-			m.message = msg.label + " done"
-			m.refreshTags()
-			m.reloadHits()
-			m.loadDetail()
-			m.checkDirty()
+			return m, nil
+		}
+		m.message = msg.label + " done"
+		m.dirty = 0
+		m.marked = map[string]bool{}
+		if msg.label == "tag rename" || msg.label == "tag merge" || msg.label == "tag delete" {
+			m.tagSel = map[string]bool{}
+			m.tagNot = map[string]bool{}
+		}
+		m.refreshTags()
+		m.reloadHits()
+		m.loadDetail()
+		if msg.label == "delete" || strings.HasPrefix(msg.label, "meta refresh") {
+			return m, m.refreshPendingCmd()
 		}
 		return m, nil
 	case editorDoneMsg:
@@ -226,6 +275,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 	return m, nil
 }
@@ -265,16 +316,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeConfirm:
 		if key == "y" || key == "Y" {
 			act := m.action
+			label := m.actionLabel
+			if label == "" {
+				label = "action"
+			}
 			m.action = nil
+			m.actionLabel = ""
 			m.mode = modeNormal
 			if act != nil {
-				if err := act(); err != nil {
-					m.errMsg = err.Error()
-				} else {
-					m.message = "done"
-					m.refreshTags()
-					m.reloadHits()
-					m.loadDetail()
+				m.busy = true
+				m.busyMsg = label
+				m.startTask(label)
+				return m, func() tea.Msg {
+					m.mu.Lock()
+					defer m.mu.Unlock()
+					return actionMsg{label: label, err: act()}
 				}
 			}
 			return m, nil
@@ -282,6 +338,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key == "n" || key == "N" || key == "esc" {
 			m.mode = modeNormal
 			m.action = nil
+			m.actionLabel = ""
 			m.message = "cancelled"
 		}
 		return m, nil
@@ -327,8 +384,19 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = focusList
 	case "3":
 		m.focus = focusDetail
+	case "h", "left":
+		m.paneLeft()
+	case "l", "right":
+		m.paneRight()
+	case "z":
+		m.zoom = !m.zoom
+		if m.zoom {
+			m.message = "zoomed — z to restore"
+		} else {
+			m.message = "panes restored"
+		}
 	case "esc":
-		m.focus = focusList
+		m.handleEsc()
 	case "j", "down":
 		m.move(1)
 	case "k", "up":
@@ -341,11 +409,28 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.move(10)
 	case "ctrl+u":
 		m.move(-10)
+	case "ctrl+a":
+		if m.focus == focusList {
+			m.markAllVisible()
+		}
 	case " ":
 		if m.focus == focusList {
 			m.toggleMark()
 		} else if m.focus == focusTags {
-			m.toggleTagCollapse()
+			m.toggleTagSelection()
+		}
+	case "-":
+		if m.focus == focusTags {
+			m.toggleTagExclude()
+		}
+	case "|":
+		if m.focus == focusTags {
+			m.tagOr = !m.tagOr
+			if m.tagOr {
+				m.message = "tag filter: OR"
+			} else {
+				m.message = "tag filter: AND"
+			}
 		}
 	case "t":
 		if m.currentHit() != nil || len(m.marked) > 0 {
@@ -353,13 +438,38 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.input.Focus()
 		}
+	case "y":
+		m.copyCurrent(false)
+	case "Y":
+		m.copyCurrent(true)
+	case "U":
+		if len(m.marked) > 0 {
+			m.marked = map[string]bool{}
+			m.message = "marks cleared"
+		}
 	case "e":
+		if m.focus == focusTags {
+			m.message = "focus results or detail for paper actions"
+			return m, nil
+		}
 		return m.openNote()
 	case "o":
+		if m.focus == focusTags {
+			m.message = "focus results or detail for paper actions"
+			return m, nil
+		}
 		return m, m.openPDF()
 	case "c":
+		if m.focus == focusTags {
+			m.message = "focus results or detail for paper actions"
+			return m, nil
+		}
 		return m, m.convert()
 	case "d":
+		if m.focus == focusTags {
+			m.message = "focus results or detail for paper actions"
+			return m, nil
+		}
 		return m.deleteCurrent()
 	case "R":
 		return m, m.reindex(false)
@@ -368,6 +478,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.reloadHits()
 		m.loadDetail()
 		m.message = "reloaded"
+		return m, tea.Batch(m.checkDirtyCmd(), m.refreshPendingCmd())
 	case "L":
 		m.mode = modeLogs
 		m.logLines = m.readLogs()
@@ -380,6 +491,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.cycleSort()
 	case "x":
+		if m.focus == focusTags {
+			m.message = "focus results or detail for paper actions"
+			return m, nil
+		}
 		return m.renameSuggested()
 	case "enter":
 		if m.focus == focusTags {
@@ -423,16 +538,12 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) refreshTags() {
-	m.mu.Lock()
 	tags, err := m.st.Tags()
 	if err != nil {
-		m.mu.Unlock()
 		m.errMsg = err.Error()
 		return
 	}
 	m.tags = tags
-	pending, _ := m.st.PendingPapers()
-	m.pendingCount = len(pending)
 	m.tagParents = map[string]bool{}
 	for _, t := range m.tags {
 		parts := strings.Split(t.Tag, "/")
@@ -441,7 +552,6 @@ func (m *Model) refreshTags() {
 		}
 	}
 	m.rebuildTagItemsLocked()
-	m.mu.Unlock()
 }
 
 func (m *Model) buildTagItems() {
@@ -459,6 +569,7 @@ func (m *Model) buildTagItems() {
 			label: name, tag: t.Tag, count: t.Count,
 			depth: strings.Count(t.Tag, "/"), hasChildren: m.tagParents[t.Tag],
 			collapsed: m.collapsedTag[t.Tag],
+			selected:  m.tagSel[t.Tag], excluded: m.tagNot[t.Tag],
 		})
 	}
 	if queries, err := m.st.ListQueries(); err == nil && len(queries) > 0 {
@@ -517,9 +628,7 @@ func (m *Model) rebuildTagItemsLocked() {
 	}
 }
 
-func (m *Model) toggleTagCollapse() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Model) setTagCollapsed(collapsed bool) {
 	if m.tagCursor < 0 || m.tagCursor >= len(m.tagItems) {
 		return
 	}
@@ -527,19 +636,31 @@ func (m *Model) toggleTagCollapse() {
 	if it.tag == "" || !it.hasChildren {
 		return
 	}
-	m.collapsedTag[it.tag] = !m.collapsedTag[it.tag]
+	m.collapsedTag[it.tag] = collapsed
 	m.rebuildTagItemsLocked()
 }
 
 func (m *Model) effectiveQuery() string {
-	q := strings.TrimSpace(m.query)
-	if m.activeTag != "" {
-		if q != "" {
-			q = "(" + q + ") AND tag:" + m.activeTag
-		} else {
-			q = "tag:" + m.activeTag
-		}
+	var parts []string
+	if q := strings.TrimSpace(m.query); q != "" {
+		parts = append(parts, "("+q+")")
 	}
+	if len(m.tagSel) > 0 {
+		tags := sortedKeys(m.tagSel)
+		terms := make([]string, len(tags))
+		for i, t := range tags {
+			terms[i] = "tag:" + t
+		}
+		op := " AND "
+		if m.tagOr {
+			op = " OR "
+		}
+		parts = append(parts, "("+strings.Join(terms, op)+")")
+	}
+	for _, t := range sortedKeys(m.tagNot) {
+		parts = append(parts, "NOT tag:"+t)
+	}
+	q := strings.Join(parts, " AND ")
 	if !strings.Contains(strings.ToLower(q), "sort:") {
 		if q != "" {
 			q += " sort:" + m.sortKey
@@ -550,11 +671,42 @@ func (m *Model) effectiveQuery() string {
 	return q
 }
 
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (m *Model) hasFilter() bool {
+	return m.pending || strings.TrimSpace(m.query) != "" || len(m.tagSel) > 0 || len(m.tagNot) > 0
+}
+
+// filterVisible reports whether the filter chips line fits on screen.
+func (m *Model) filterVisible() bool {
+	return m.height >= 8 && m.hasFilter()
+}
+
+func (m *Model) clearTagState() {
+	m.tagSel = map[string]bool{}
+	m.tagNot = map[string]bool{}
+}
+
+func (m *Model) clearFilters() {
+	m.clearTagState()
+	m.query = ""
+	m.pending = false
+	m.marked = map[string]bool{}
+	m.cursor, m.listTop = 0, 0
+	m.reloadHits()
+}
+
 func (m *Model) reloadHits() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.pending {
 		papers, _ := m.st.PendingPapers()
+		m.pendingCount = len(papers)
 		var hits []model.SearchHit
 		for _, p := range papers {
 			h := model.SearchHit{ID: p.Meta.ID, Citekey: p.Meta.Citekey, Title: p.Meta.Title, Year: p.Meta.Year,
@@ -583,8 +735,6 @@ func (m *Model) attachmentsFor(citekey string) []store.Attachment {
 }
 
 func (m *Model) loadDetail() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.loadDetailLocked()
 }
 
@@ -719,8 +869,6 @@ func (m *Model) selectTag() {
 		return
 	}
 	item := m.tagItems[m.tagCursor]
-	m.pending = false
-	m.activeTag = ""
 	switch {
 	case item.queryName != "":
 		expr, err := m.st.LoadQuery(item.queryName)
@@ -728,21 +876,73 @@ func (m *Model) selectTag() {
 			m.errMsg = err.Error()
 			return
 		}
+		m.clearTagState()
+		m.pending = false
 		m.query = expr
 		m.message = "query: " + item.queryName
 	case item.all:
-		m.activeTag = ""
+		m.clearTagState()
+		m.pending = false
+		m.query = ""
+		m.message = "all papers"
 	case item.pending:
+		m.clearTagState()
 		m.pending = true
+		m.query = ""
+		m.message = "pending review"
 	case item.tag != "":
-		m.activeTag = item.tag
+		if len(m.tagSel) == 0 {
+			m.tagSel[item.tag] = true
+			delete(m.tagNot, item.tag)
+		}
+		m.pending = false
+		if m.tagOr {
+			m.message = fmt.Sprintf("%d tag(s) filtered (OR)", len(m.tagSel))
+		} else {
+			m.message = fmt.Sprintf("%d tag(s) filtered (AND)", len(m.tagSel))
+		}
 	default:
 		return
 	}
 	m.cursor, m.listTop = 0, 0
 	m.marked = map[string]bool{}
+	m.rebuildTagItemsLocked()
 	m.reloadHits()
 	m.focus = focusList
+}
+
+func (m *Model) toggleTagSelection() {
+	if m.tagCursor < 0 || m.tagCursor >= len(m.tagItems) {
+		return
+	}
+	it := m.tagItems[m.tagCursor]
+	if it.tag == "" {
+		return
+	}
+	if m.tagSel[it.tag] {
+		delete(m.tagSel, it.tag)
+	} else {
+		m.tagSel[it.tag] = true
+		delete(m.tagNot, it.tag)
+	}
+	m.rebuildTagItemsLocked()
+}
+
+func (m *Model) toggleTagExclude() {
+	if m.tagCursor < 0 || m.tagCursor >= len(m.tagItems) {
+		return
+	}
+	it := m.tagItems[m.tagCursor]
+	if it.tag == "" {
+		return
+	}
+	if m.tagNot[it.tag] {
+		delete(m.tagNot, it.tag)
+	} else {
+		m.tagNot[it.tag] = true
+		delete(m.tagSel, it.tag)
+	}
+	m.rebuildTagItemsLocked()
 }
 
 func (m *Model) toggleMark() {
@@ -752,13 +952,75 @@ func (m *Model) toggleMark() {
 	}
 	if m.marked[c] {
 		delete(m.marked, c)
-	} else {
-		m.marked[c] = true
+		return
 	}
+	m.marked[c] = true
 	if m.cursor < len(m.hits)-1 {
 		m.cursor++
 		m.loadDetail()
 	}
+}
+
+func (m *Model) markAllVisible() {
+	for _, h := range m.hits {
+		m.marked[h.Citekey] = true
+	}
+	m.message = fmt.Sprintf("%d marked", len(m.marked))
+}
+
+func (m *Model) paneLeft() {
+	if m.focus == focusTags {
+		m.setTagCollapsed(true)
+		return
+	}
+	m.cycleFocus(-1)
+}
+
+func (m *Model) paneRight() {
+	if m.focus == focusTags {
+		m.setTagCollapsed(false)
+		return
+	}
+	m.cycleFocus(1)
+}
+
+func (m *Model) handleEsc() {
+	switch {
+	case m.errMsg != "":
+		m.errMsg = ""
+	case len(m.marked) > 0:
+		m.marked = map[string]bool{}
+		m.message = "marks cleared"
+	case m.hasFilter():
+		m.clearFilters()
+		m.message = "filters cleared"
+	default:
+		m.focus = focusList
+	}
+}
+
+func (m *Model) copyCurrent(doi bool) {
+	if m.focus == focusTags {
+		m.message = "focus results or detail for paper actions"
+		return
+	}
+	h := m.currentHit()
+	if h == nil {
+		return
+	}
+	text := h.Citekey
+	if doi {
+		if h.DOI == "" {
+			m.message = "no DOI for " + h.Citekey
+			return
+		}
+		text = h.DOI
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		m.errMsg = "clipboard: " + err.Error()
+		return
+	}
+	m.message = "copied " + text
 }
 
 func (m *Model) cycleSort() {
@@ -773,12 +1035,27 @@ func (m *Model) cycleSort() {
 	m.message = "sort: " + m.sortKey
 }
 
-func (m *Model) checkDirty() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	n, err := m.st.DirtyCount()
-	if err == nil {
-		m.dirty = n
+func (m *Model) checkDirtyCmd() tea.Cmd {
+	if m.dirtyChecking {
+		return nil
+	}
+	m.dirtyChecking = true
+	st := m.st
+	return func() tea.Msg {
+		n, err := st.DirtyCount()
+		return dirtyMsg{n: n, err: err}
+	}
+}
+
+func (m *Model) refreshPendingCmd() tea.Cmd {
+	if m.pendingScan {
+		return nil
+	}
+	m.pendingScan = true
+	st := m.st
+	return func() tea.Msg {
+		papers, err := st.PendingPapers()
+		return pendingMsg{count: len(papers), err: err}
 	}
 }
 
@@ -896,10 +1173,10 @@ func (m *Model) deleteCurrent() (tea.Model, tea.Cmd) {
 			if _, err := m.st.Rm(ck); err != nil {
 				return err
 			}
-			delete(m.marked, ck)
 		}
 		return nil
 	}
+	m.actionLabel = "delete"
 	return m, nil
 }
 
@@ -919,19 +1196,20 @@ func (m *Model) renameSuggested() (tea.Model, tea.Cmd) {
 		_, err := m.st.RenamePaper(ck, suggested)
 		return err
 	}
+	m.actionLabel = "rename"
 	return m, nil
 }
 
 func (m *Model) openReview() {
-	m.mu.Lock()
 	papers, _ := m.st.PendingPapers()
-	m.mu.Unlock()
 	m.reviewPapers = papers
+	m.pendingCount = len(papers)
 	m.reviewCursor = 0
 	m.reviewCand = 0
 	m.reviewSel = map[int]bool{}
 	m.mode = modeReview
 	m.loadReviewFields()
+	m.rebuildTagItemsLocked()
 }
 
 func (m *Model) currentReview() *model.Paper {
@@ -1061,11 +1339,12 @@ func (m *Model) finishTask(label string, err error) {
 	}
 }
 
-func (m *Model) readLogs() []string {
+func (m *Model) readLogs() []logLine {
 	lines := m.st.Log.Tail(200)
-	var out []string
+	out := make([]logLine, 0, len(lines))
 	for _, l := range lines {
-		out = append(out, logging.ParseLine(l))
+		text, level := logging.ParseEntry(l)
+		out = append(out, logLine{text: text, level: level})
 	}
 	return out
 }
@@ -1167,7 +1446,9 @@ func (m *Model) runCommand(line string) tea.Cmd {
 			}
 			m.query = expr
 			m.pending = false
-			m.activeTag = ""
+			m.clearTagState()
+			m.marked = map[string]bool{}
+			m.cursor, m.listTop = 0, 0
 			m.reloadHits()
 			m.message = "query: " + args[1]
 		case "rm":
@@ -1188,7 +1469,12 @@ func (m *Model) runCommand(line string) tea.Cmd {
 	case "search":
 		m.query = strings.Join(args, " ")
 		m.pending = false
+		m.marked = map[string]bool{}
+		m.cursor, m.listTop = 0, 0
 		m.reloadHits()
+	case "clear":
+		m.clearFilters()
+		m.message = "filters cleared"
 	case "tag":
 		if len(args) < 1 {
 			m.errMsg = "usage: tag add|rm <tags> | tag rename <old> <new> | tag merge <a> <b> | tag delete <t>"
@@ -1314,6 +1600,7 @@ func (m *Model) runCommand(line string) tea.Cmd {
 			_, err := m.st.RenamePaper(oldKey, newKey)
 			return err
 		}
+		m.actionLabel = "rename"
 	case "rekey":
 		dry := contains(args, "--dry-run")
 		force := contains(args, "--force")
@@ -1344,6 +1631,7 @@ func (m *Model) runCommand(line string) tea.Cmd {
 			_, err := m.st.ApplyRekey(ops)
 			return err
 		}
+		m.actionLabel = "rekey"
 		return nil
 	case "reindex":
 		return m.reindex(contains(args, "--rebuild"))
@@ -1367,12 +1655,12 @@ func (m *Model) runCommand(line string) tea.Cmd {
 	case "rm":
 		if len(args) == 1 {
 			m.busy = true
-			m.startTask("rm")
+			m.startTask("delete")
 			return func() tea.Msg {
 				m.mu.Lock()
 				defer m.mu.Unlock()
 				_, err := m.st.Rm(args[0])
-				return actionMsg{label: "rm", err: err}
+				return actionMsg{label: "delete", err: err}
 			}
 		}
 		model, cmd := m.deleteCurrent()

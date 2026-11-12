@@ -76,11 +76,7 @@ func newQueryCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if flagJSON {
-					return printJSON(hits)
-				}
-				printHits(hits)
-				return nil
+				return outputHits(hits, len(hits), s.Root, listOptions{})
 			})
 		},
 	}

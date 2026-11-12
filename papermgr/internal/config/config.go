@@ -30,6 +30,7 @@ type Global struct {
 	Editor  string `toml:"editor"`
 	Viewer  string `toml:"viewer"`
 	LogDir  string `toml:"log_dir"`
+	FZF     bool   `toml:"fzf"`
 }
 
 // DefaultLibrary returns library defaults.

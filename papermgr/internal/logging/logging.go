@@ -103,8 +103,8 @@ func splitLines(s string) []string {
 	return out
 }
 
-// ParseLine renders a JSON log line compactly for the TUI.
-func ParseLine(line string) string {
+// ParseEntry renders a JSON log line compactly and returns its level.
+func ParseEntry(line string) (text, level string) {
 	var rec struct {
 		TS     string `json:"ts"`
 		Level  string `json:"level"`
@@ -114,7 +114,7 @@ func ParseLine(line string) string {
 		Err    string `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(line), &rec); err != nil {
-		return line
+		return line, ""
 	}
 	s := rec.TS
 	if len(s) > 19 {
@@ -130,7 +130,13 @@ func ParseLine(line string) string {
 	if rec.Err != "" {
 		s += ": " + rec.Err
 	}
-	return s
+	return s, rec.Level
+}
+
+// ParseLine renders a JSON log line compactly for the TUI.
+func ParseLine(line string) string {
+	text, _ := ParseEntry(line)
+	return text
 }
 
 // Sprintf is a tiny convenience for log messages.
